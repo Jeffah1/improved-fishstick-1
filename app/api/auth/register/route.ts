@@ -1,31 +1,12 @@
 import { NextResponse } from 'next/server';
 import { login } from '@/lib/auth';
-import fs from 'fs';
-import path from 'path';
-
-const DB_PATH = path.join(process.cwd(), 'data', 'users.json');
-
-function getUsers() {
-  if (!fs.existsSync(path.dirname(DB_PATH))) {
-    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  }
-  if (!fs.existsSync(DB_PATH)) {
-    fs.writeFileSync(DB_PATH, JSON.stringify([]));
-    return [];
-  }
-  return JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
-}
-
-function saveUsers(users: any[]) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(users, null, 2));
-}
+import { usersStore } from '@/lib/mock-db';
 
 export async function POST(req: Request) {
   try {
     const { email, password, name } = await req.json();
-    const users = getUsers();
 
-    if (users.find((u: any) => u.email === email)) {
+    if (usersStore.find((u: any) => u.email === email)) {
       return NextResponse.json({ error: 'User already exists' }, { status: 400 });
     }
 
@@ -38,8 +19,7 @@ export async function POST(req: Request) {
       createdAt: new Date().toISOString(),
     };
 
-    users.push(newUser);
-    saveUsers(users);
+    usersStore.push(newUser);
 
     const { password: _, ...userWithoutPassword } = newUser;
     await login(userWithoutPassword);
