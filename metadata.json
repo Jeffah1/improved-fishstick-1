@@ -1,0 +1,8 @@
+{
+  "name": "Sales Insights Pro - Architect Edition",
+  "description": "A high-performance e-commerce analytics SaaS architecture and dashboard prototype, featuring AI-driven market grounding, competitor tracking, and a real-time voice interface.",
+  "requestFramePermissions": [
+    "microphone",
+    "geolocation"
+  ]
+}
