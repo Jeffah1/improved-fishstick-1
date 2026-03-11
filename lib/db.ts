@@ -15,171 +15,161 @@ import {
   UserSession,
   SecurityActivity
 } from '@/types';
-import { GoogleGenAI } from "@google/genai";
+import { supabase } from './supabase';
 
-class LocalDatabase {
-  private STORAGE_KEY = 'sales_insights_pro_db_v3';
-
-  constructor() {
-    if (typeof window !== 'undefined' && !localStorage.getItem(this.STORAGE_KEY)) {
-      this.save({
-        users: [],
-        stores: [],
-        products: [],
-        orders: [],
-        invoices: [],
-        usage: {},
-        competitorPrices: [],
-        priceAlerts: [],
-        aiRecommendations: [],
-        storeSettings: [],
-        sessions: [],
-        securityActivity: []
-      });
-    }
-  }
-
-  private get data() {
-    if (typeof window === 'undefined') return this.getEmptyData();
-    const d = JSON.parse(localStorage.getItem(this.STORAGE_KEY) || '{}');
+class SupabaseDatabase {
+  // Helper to map snake_case to camelCase for User
+  private mapUser(data: any): User {
     return {
-      ...this.getEmptyData(),
-      ...d
+      id: data.id,
+      name: data.name,
+      email: data.email,
+      plan: data.plan as PlanType,
+      status: data.status,
+      storeId: data.store_id,
+      stripeCustomerId: data.stripe_customer_id,
+      subscriptionId: data.subscription_id,
+      subscriptionStatus: data.subscription_status,
+      createdAt: data.created_at,
+      twoFactorEnabled: data.two_factor_enabled
     };
-  }
-
-  private getEmptyData() {
-    return {
-      users: [],
-      stores: [],
-      products: [],
-      orders: [],
-      invoices: [],
-      usage: {},
-      competitorPrices: [],
-      priceAlerts: [],
-      aiRecommendations: [],
-      storeSettings: [],
-      sessions: [],
-      securityActivity: []
-    };
-  }
-
-  private save(data: any) {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(data));
-    }
   }
 
   async register(email: string, password: string): Promise<User> {
-    const d = this.data;
-    if (d.users.find((u: any) => u.email === email)) throw new Error("Email exists");
-    const newUser: User = { 
-      id: `u-${Date.now()}`, 
-      email, 
-      plan: 'free', 
-      status: 'active', 
-      createdAt: new Date().toISOString(),
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email,
+      password,
+    });
+
+    if (authError) throw authError;
+    if (!authData.user) throw new Error("Registration failed");
+
+    const newUser: any = {
+      id: authData.user.id,
+      email,
+      plan: 'free',
+      status: 'active',
       name: email.split('@')[0]
     };
-    d.users.push({ ...newUser, password });
-    this.save(d);
-    return newUser;
+
+    const { data, error } = await supabase
+      .from('users')
+      .insert(newUser)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return this.mapUser(data);
   }
 
   async login(email: string, password: string): Promise<User> {
-    const d = this.data;
-    const user = d.users.find((u: any) => u.email === email && u.password === password);
-    if (!user) throw new Error("Invalid credentials");
-    const { password: _, ...safeUser } = user;
-    return safeUser;
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (authError) throw authError;
+    if (!authData.user) throw new Error("Login failed");
+
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', authData.user.id)
+      .single();
+
+    if (error) throw error;
+    return this.mapUser(data);
   }
 
   async updateUser(userId: string, updates: Partial<User>): Promise<User> {
-    const d = this.data;
-    const idx = d.users.findIndex((u: any) => u.id === userId);
-    if (idx !== -1) {
-      d.users[idx] = { ...d.users[idx], ...updates };
-      const { password: _, ...safeUser } = d.users[idx];
-      this.save(d);
-      return safeUser;
-    }
-    throw new Error("User not found");
+    const { data, error } = await supabase
+      .from('users')
+      .update({
+        name: updates.name,
+        plan: updates.plan,
+        status: updates.status,
+        store_id: updates.storeId,
+        stripe_customer_id: updates.stripeCustomerId,
+        subscription_id: updates.subscriptionId,
+        subscription_status: updates.subscriptionStatus,
+        two_factor_enabled: updates.twoFactorEnabled
+      })
+      .eq('id', userId)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return this.mapUser(data);
   }
 
   async updateUserPlan(userId: string, plan: PlanType): Promise<void> {
-    const d = this.data;
-    const idx = d.users.findIndex((u: any) => u.id === userId);
-    if (idx !== -1) {
-      d.users[idx].plan = plan;
-      this.save(d);
-    }
+    const { error } = await supabase
+      .from('users')
+      .update({ plan })
+      .eq('id', userId);
+
+    if (error) throw error;
   }
 
   async createStore(userId: string, name: string, platform: 'shopify' | 'csv'): Promise<Store> {
-    const d = this.data;
-    const newStore: Store = { id: `s-${Date.now()}`, name, platform, createdAt: new Date().toISOString() };
-    d.stores.push(newStore);
-    const userIdx = d.users.findIndex((u: any) => u.id === userId);
-    if (userIdx !== -1) d.users[userIdx].storeId = newStore.id;
-    this.save(d);
-    return newStore;
+    const { data: storeData, error: storeError } = await supabase
+      .from('stores')
+      .insert({ name, platform })
+      .select()
+      .single();
+
+    if (storeError) throw storeError;
+
+    const { error: userError } = await supabase
+      .from('users')
+      .update({ store_id: storeData.id })
+      .eq('id', userId);
+
+    if (userError) throw userError;
+
+    return {
+      id: storeData.id,
+      name: storeData.name,
+      platform: storeData.platform as 'shopify' | 'csv',
+      createdAt: storeData.created_at
+    };
   }
 
   async seedStoreData(storeId: string) {
-    const d = this.data;
-    d.products = d.products.filter((p: any) => p.storeId !== storeId);
-    d.orders = d.orders.filter((o: any) => o.storeId !== storeId);
+    // Implementation for seeding Supabase with initial data
+    const products = [
+      { store_id: storeId, name: 'Premium Coffee Grinder', sku: 'CG-001', price: 129.99, cost: 45.00, stock: 12, status: 'active' },
+      { store_id: storeId, name: 'Gooseneck Kettle', sku: 'GK-99', price: 89.00, cost: 32.00, stock: 4, status: 'active' },
+      { store_id: storeId, name: 'Ceramic Pour Over', sku: 'CPO-5', price: 24.50, cost: 8.00, stock: 142, status: 'active' }
+    ];
 
-    const products: Product[] = [
-      { id: 'p1', storeId, name: 'Premium Coffee Grinder', sku: 'CG-001', price: 129.99, cost: 45.00, stock: 12, status: 'active' },
-      { id: 'p2', storeId, name: 'Gooseneck Kettle', sku: 'GK-99', price: 89.00, cost: 32.00, stock: 4, status: 'active' },
-      { id: 'p3', storeId, name: 'Ceramic Pour Over', sku: 'CPO-5', price: 24.50, cost: 8.00, stock: 142, status: 'active' }
-    ];
-    const customers = [
-      { name: 'John Doe', email: 'john@example.com' },
-      { name: 'Jane Smith', email: 'jane@example.com' },
-      { name: 'Alice Johnson', email: 'alice@example.com' },
-      { name: 'Bob Miller', email: 'bob@example.com' },
-      { name: 'Carol White', email: 'carol@example.com' }
-    ];
-    const orders: Order[] = [];
+    const { error: prodError } = await supabase.from('products').insert(products);
+    if (prodError) throw prodError;
+
+    // Seed some orders
+    const orders = [];
     const now = new Date();
-    for(let i=0; i<50; i++) {
+    for(let i=0; i<20; i++) {
       const date = new Date(now);
       date.setDate(now.getDate() - i);
-      const dailyOrders = 2 + Math.floor(Math.random() * 3);
-      for(let j=0; j<dailyOrders; j++) {
-        const prod = products[Math.floor(Math.random() * products.length)];
-        const customer = customers[Math.floor(Math.random() * customers.length)];
-        const totalPrice = prod.price;
-        const productCost = prod.cost;
-        const shippingCost = 5.00;
-        const transactionFee = totalPrice * 0.029 + 0.30;
-        const tax = totalPrice * 0.08;
-        const netProfit = totalPrice - (productCost + shippingCost + transactionFee + tax);
-
-        orders.push({
-          id: `o-${i}-${j}`,
-          storeId,
-          shopifyOrderId: `sh-${1000 + i * 10 + j}`,
-          customerName: customer.name,
-          customerEmail: customer.email,
-          totalPrice,
-          productCost,
-          shippingCost,
-          transactionFee,
-          tax,
-          netProfit,
-          status: Math.random() > 0.1 ? 'fulfilled' : 'unfulfilled',
-          createdAt: date.toISOString(),
-          items: [{ name: prod.name, quantity: 1, price: prod.price }]
-        });
-      }
+      orders.push({
+        store_id: storeId,
+        customer_name: 'Seed Customer',
+        customer_email: `seed-${i}@example.com`,
+        total_price: 100,
+        product_cost: 40,
+        shipping_cost: 10,
+        transaction_fee: 3,
+        tax: 8,
+        net_profit: 39,
+        status: 'fulfilled',
+        created_at: date.toISOString(),
+        items: [{ name: 'Seed Product', quantity: 1, price: 100 }]
+      });
     }
-    d.products = [...d.products, ...products];
-    d.orders = [...d.orders, ...orders];
-    this.save(d);
+
+    const { error: orderError } = await supabase.from('orders').insert(orders);
+    if (orderError) throw orderError;
   }
 
   async getOrders(storeId: string, options: { 
@@ -190,146 +180,166 @@ class LocalDatabase {
     page?: number,
     limit?: number
   } = {}): Promise<{ orders: Order[], total: number }> {
-    const d = this.data;
-    let filtered = d.orders.filter((o: any) => o.storeId === storeId);
+    let query = supabase
+      .from('orders')
+      .select('*', { count: 'exact' })
+      .eq('store_id', storeId);
 
     if (options.search) {
-      const s = options.search.toLowerCase();
-      filtered = filtered.filter((o: any) => 
-        o.customerName.toLowerCase().includes(s) || 
-        o.customerEmail.toLowerCase().includes(s) || 
-        o.shopifyOrderId.toLowerCase().includes(s)
-      );
+      query = query.or(`customer_name.ilike.%${options.search}%,customer_email.ilike.%${options.search}%,shopify_order_id.ilike.%${options.search}%`);
     }
 
     if (options.status && options.status !== 'all') {
-      filtered = filtered.filter((o: any) => o.status === options.status);
+      query = query.eq('status', options.status);
     }
 
     if (options.dateRange) {
-      filtered = filtered.filter((o: any) => 
-        o.createdAt >= options.dateRange!.start && 
-        o.createdAt <= options.dateRange!.end
-      );
+      query = query.gte('created_at', options.dateRange.start).lte('created_at', options.dateRange.end);
     }
 
     if (options.profitRange) {
-      filtered = filtered.filter((o: any) => 
-        o.netProfit >= options.profitRange!.min && 
-        o.netProfit <= options.profitRange!.max
-      );
+      query = query.gte('net_profit', options.profitRange.min).lte('net_profit', options.profitRange.max);
     }
 
-    filtered.sort((a: any, b: any) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-
-    const total = filtered.length;
     const page = options.page || 1;
     const limit = options.limit || 10;
-    const orders = filtered.slice((page - 1) * limit, page * limit);
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
 
-    return { orders, total };
-  }
+    const { data, error, count } = await query
+      .order('created_at', { ascending: false })
+      .range(from, to);
 
-  async syncShopifyOrders(storeId: string): Promise<void> {
-    const d = this.data;
-    // Simulate Shopify Order Sync
-    const newOrders: Order[] = [
-      {
-        id: `o-sync-${Date.now()}`,
-        storeId,
-        shopifyOrderId: `sh-${Date.now()}`,
-        customerName: 'New Shopify Customer',
-        customerEmail: 'new@shopify.com',
-        totalPrice: 150.00,
-        productCost: 60.00,
-        shippingCost: 10.00,
-        transactionFee: 4.65,
-        tax: 12.00,
-        netProfit: 63.35,
-        status: 'fulfilled',
-        createdAt: new Date().toISOString(),
-        items: [{ name: 'Sync Product', quantity: 1, price: 150.00 }]
-      }
-    ];
-    d.orders = [...newOrders, ...d.orders];
-    this.save(d);
+    if (error) throw error;
+
+    const orders: Order[] = (data || []).map(o => ({
+      id: o.id,
+      storeId: o.store_id,
+      shopifyOrderId: o.shopify_order_id,
+      customerName: o.customer_name,
+      customerEmail: o.customer_email,
+      totalPrice: Number(o.total_price),
+      productCost: Number(o.product_cost),
+      shippingCost: Number(o.shipping_cost),
+      transactionFee: Number(o.transaction_fee),
+      tax: Number(o.tax),
+      netProfit: Number(o.net_profit),
+      status: o.status as any,
+      createdAt: o.created_at,
+      items: o.items
+    }));
+
+    return { orders, total: count || 0 };
   }
 
   async getProducts(storeId: string): Promise<Product[]> {
-    return this.data.products.filter((p: any) => p.storeId === storeId);
+    const { data, error } = await supabase
+      .from('products')
+      .select('*')
+      .eq('store_id', storeId);
+
+    if (error) throw error;
+
+    return (data || []).map(p => ({
+      id: p.id,
+      storeId: p.store_id,
+      name: p.name,
+      sku: p.sku,
+      price: Number(p.price),
+      cost: Number(p.cost),
+      stock: p.stock,
+      status: p.status as any
+    }));
   }
 
   async updateProductPrice(productId: string, newPrice: number): Promise<void> {
-    const d = this.data;
-    const idx = d.products.findIndex((p: any) => p.id === productId);
-    if (idx !== -1) {
-      d.products[idx].price = newPrice;
-      this.save(d);
-    }
+    const { error } = await supabase
+      .from('products')
+      .update({ price: newPrice })
+      .eq('id', productId);
+
+    if (error) throw error;
   }
 
   async addProduct(product: Omit<Product, 'id'>): Promise<Product> {
-    const d = this.data;
-    const newProduct: Product = { ...product, id: `p-${Date.now()}` };
-    d.products.push(newProduct);
-    this.save(d);
-    return newProduct;
+    const { data, error } = await supabase
+      .from('products')
+      .insert({
+        store_id: product.storeId,
+        name: product.name,
+        sku: product.sku,
+        price: product.price,
+        cost: product.cost,
+        stock: product.stock,
+        status: product.status
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return {
+      id: data.id,
+      storeId: data.store_id,
+      name: data.name,
+      sku: data.sku,
+      price: Number(data.price),
+      cost: Number(data.cost),
+      stock: data.stock,
+      status: data.status as any
+    };
   }
 
   async updateProduct(productId: string, updates: Partial<Product>): Promise<void> {
-    const d = this.data;
-    const idx = d.products.findIndex((p: any) => p.id === productId);
-    if (idx !== -1) {
-      d.products[idx] = { ...d.products[idx], ...updates };
-      this.save(d);
-    }
-  }
+    const { error } = await supabase
+      .from('products')
+      .update({
+        name: updates.name,
+        sku: updates.sku,
+        price: updates.price,
+        cost: updates.cost,
+        stock: updates.stock,
+        status: updates.status
+      })
+      .eq('id', productId);
 
-  async syncShopifyProducts(storeId: string): Promise<void> {
-    const d = this.data;
-    // Simulate Shopify Sync
-    const shopifyProducts = [
-      { name: 'Shopify French Press', sku: 'SFP-101', price: 45.00, cost: 15.00, stock: 50, status: 'active' as const },
-      { name: 'Shopify Espresso Machine', sku: 'SEM-202', price: 599.00, cost: 250.00, stock: 5, status: 'active' as const }
-    ];
-
-    shopifyProducts.forEach(sp => {
-      const existingIdx = d.products.findIndex((p: any) => p.sku === sp.sku && p.storeId === storeId);
-      if (existingIdx !== -1) {
-        d.products[existingIdx] = { ...d.products[existingIdx], ...sp };
-      } else {
-        d.products.push({ ...sp, id: `p-sh-${Date.now()}-${Math.random()}`, storeId });
-      }
-    });
-    this.save(d);
+    if (error) throw error;
   }
 
   async getDashboardStats(storeId: string) {
-    const d = this.data;
-    const orders = d.orders.filter((o: any) => o.storeId === storeId);
-    const products = d.products.filter((p: any) => p.storeId === storeId);
-    
-    const revenue = orders.reduce((sum: number, o: any) => sum + o.totalPrice, 0);
-    const profit = orders.reduce((sum: number, o: any) => sum + o.netProfit, 0);
+    const { data: orders, error: orderError } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('store_id', storeId);
+
+    if (orderError) throw orderError;
+
+    const { data: products, error: prodError } = await supabase
+      .from('products')
+      .select('*')
+      .eq('store_id', storeId);
+
+    if (prodError) throw prodError;
+
+    const revenue = orders.reduce((sum: number, o: any) => sum + Number(o.total_price), 0);
+    const profit = orders.reduce((sum: number, o: any) => sum + Number(o.net_profit), 0);
     const orderCount = orders.length;
     
-    // Calculate CLV
     const customerOrders: Record<string, number> = {};
     orders.forEach((o: any) => {
-      customerOrders[o.customerEmail] = (customerOrders[o.customerEmail] || 0) + o.totalPrice;
+      customerOrders[o.customer_email] = (customerOrders[o.customer_email] || 0) + Number(o.total_price);
     });
     const customers = Object.values(customerOrders);
     const clv = customers.length > 0 ? customers.reduce((a, b) => a + b, 0) / customers.length : 0;
 
-    // Daily Data
     const dailyRevenue: Record<string, number> = {};
     const dailyProfit: Record<string, number> = {};
     const dailyOrders: Record<string, number> = {};
     
     orders.forEach((o: any) => {
-      const date = (o.createdAt || new Date().toISOString()).split('T')[0];
-      dailyRevenue[date] = (dailyRevenue[date] || 0) + (o.totalPrice || 0);
-      dailyProfit[date] = (dailyProfit[date] || 0) + (o.netProfit || 0);
+      const date = (o.created_at || new Date().toISOString()).split('T')[0];
+      dailyRevenue[date] = (dailyRevenue[date] || 0) + Number(o.total_price);
+      dailyProfit[date] = (dailyProfit[date] || 0) + Number(o.net_profit);
       dailyOrders[date] = (dailyOrders[date] || 0) + 1;
     });
 
@@ -345,7 +355,6 @@ class LocalDatabase {
       .map(([date, value]) => ({ date, value }))
       .sort((a, b) => a.date.localeCompare(b.date));
 
-    // Top Products with Revenue & Profit
     const productStats: Record<string, { name: string, revenue: number, profit: number }> = {};
     orders.forEach((o: any) => {
       (o.items || []).forEach((item: any) => {
@@ -353,10 +362,9 @@ class LocalDatabase {
           productStats[item.name] = { name: item.name, revenue: 0, profit: 0 };
         }
         productStats[item.name].revenue += item.price * item.quantity;
-        // Estimate profit per item if not directly in order items
         const p = products.find((prod: any) => prod.name === item.name);
         if (p) {
-          productStats[item.name].profit += (p.price - p.cost) * item.quantity;
+          productStats[item.name].profit += (Number(p.price) - Number(p.cost)) * item.quantity;
         }
       });
     });
@@ -365,25 +373,19 @@ class LocalDatabase {
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 5);
 
-    // Critical Alerts
-    const alerts = [];
+    const alerts: any[] = [];
     products.forEach((p: any) => {
       if (p.stock < 10) {
         alerts.push({ id: `alert-stock-${p.id}`, type: 'stock', severity: 'high', message: `Low stock: ${p.name} (${p.stock} left)`, timestamp: new Date().toISOString() });
       }
     });
-    
-    // Simulated profit/sales drop alerts
-    if (profit < 1000) {
-      alerts.push({ id: 'alert-profit-drop', type: 'price', severity: 'medium', message: 'Net profit is below $1,000 threshold this month.', timestamp: new Date().toISOString() });
-    }
 
     return { 
       revenue, 
       profit, 
       orderCount, 
       clv,
-      products,
+      products: products.map(p => ({ ...p, id: p.id, storeId: p.store_id, price: Number(p.price), cost: Number(p.cost) })),
       topProducts,
       revenueChart,
       profitChart,
@@ -393,20 +395,15 @@ class LocalDatabase {
   }
 
   async getInvoices(userId: string): Promise<Invoice[]> {
-    const d = this.data;
-    // Mock invoices if none exist
-    if (!d.invoices || d.invoices.length === 0) {
-      return [
-        { id: 'inv_1', amount: 49.00, status: 'paid', date: '2024-02-01', pdfUrl: '#' },
-        { id: 'inv_2', amount: 49.00, status: 'paid', date: '2024-01-01', pdfUrl: '#' }
-      ];
-    }
-    return d.invoices.filter((i: any) => i.userId === userId);
+    // In a real app, fetch from Stripe or a DB table
+    return [
+      { id: 'inv_1', amount: 49.00, status: 'paid', date: '2024-02-01', pdfUrl: '#' },
+      { id: 'inv_2', amount: 49.00, status: 'paid', date: '2024-01-01', pdfUrl: '#' }
+    ];
   }
 
   async getUsage(userId: string): Promise<UsageStats> {
-    const d = this.data;
-    return d.usage[userId] || {
+    return {
       ordersAnalyzed: 1240,
       reportsGenerated: 12,
       aiTokensUsed: 45000
@@ -414,185 +411,252 @@ class LocalDatabase {
   }
 
   async getPaymentMethod(userId: string): Promise<PaymentMethod | null> {
-    return {
-      brand: 'visa',
-      last4: '4242',
-      expMonth: 12,
-      expYear: 2025
-    };
+    return { brand: 'visa', last4: '4242', expMonth: 12, expYear: 2025 };
   }
 
   async saveCompetitorPrice(price: Omit<CompetitorPrice, 'id'>): Promise<CompetitorPrice> {
-    const d = this.data;
-    const newPrice: CompetitorPrice = { ...price, id: `cp-${Date.now()}-${Math.random()}` };
-    if (!d.competitorPrices) d.competitorPrices = [];
-    d.competitorPrices.push(newPrice);
-    this.save(d);
-    return newPrice;
+    const { data, error } = await supabase
+      .from('competitor_prices')
+      .insert({
+        store_id: price.storeId,
+        product_id: price.productId,
+        competitor_name: price.competitorName,
+        price: price.price,
+        url: price.url,
+        currency: price.currency,
+        stock_status: price.stockStatus
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return {
+      ...price,
+      id: data.id,
+      timestamp: data.timestamp
+    };
   }
 
   async getCompetitorPrices(productId: string): Promise<CompetitorPrice[]> {
-    const d = this.data;
-    if (!d.competitorPrices) return [];
-    return d.competitorPrices.filter((p: any) => p.productId === productId);
+    const { data, error } = await supabase
+      .from('competitor_prices')
+      .select('*')
+      .eq('product_id', productId);
+
+    if (error) throw error;
+    return (data || []).map(p => ({
+      id: p.id,
+      storeId: p.store_id,
+      productId: p.product_id,
+      competitorName: p.competitor_name,
+      price: Number(p.price),
+      url: p.url,
+      currency: p.currency,
+      stockStatus: p.stock_status,
+      timestamp: p.timestamp
+    }));
   }
 
   async savePriceAlert(alert: Omit<PriceAlert, 'id'>): Promise<PriceAlert> {
-    const d = this.data;
-    const newAlert: PriceAlert = { ...alert, id: `pa-${Date.now()}-${Math.random()}` };
-    if (!d.priceAlerts) d.priceAlerts = [];
-    d.priceAlerts.push(newAlert);
-    this.save(d);
-    return newAlert;
+    const { data, error } = await supabase
+      .from('price_alerts')
+      .insert({
+        store_id: alert.storeId,
+        product_id: alert.productId,
+        competitor_name: alert.competitorName,
+        competitor_price: alert.competitorPrice,
+        our_price: alert.ourPrice,
+        difference: alert.difference,
+        percentage: alert.percentage,
+        threshold_type: alert.thresholdType
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return {
+      ...alert,
+      id: data.id,
+      timestamp: data.timestamp,
+      read: data.read
+    };
   }
 
   async getPriceAlerts(storeId: string): Promise<PriceAlert[]> {
-    const d = this.data;
-    if (!d.priceAlerts) return [];
-    return d.priceAlerts.filter((a: any) => a.storeId === storeId);
+    const { data, error } = await supabase
+      .from('price_alerts')
+      .select('*')
+      .eq('store_id', storeId);
+
+    if (error) throw error;
+    return (data || []).map(a => ({
+      id: a.id,
+      storeId: a.store_id,
+      productId: a.product_id,
+      competitorName: a.competitor_name,
+      competitorPrice: Number(a.competitor_price),
+      ourPrice: Number(a.our_price),
+      difference: Number(a.difference),
+      percentage: Number(a.percentage),
+      thresholdType: a.threshold_type as any,
+      timestamp: a.timestamp,
+      read: a.read
+    }));
   }
 
-  // AI Recommendations
   async getRecommendations(storeId: string): Promise<AIRecommendation[]> {
-    const d = this.data;
-    return (d.aiRecommendations || []).filter((r: any) => r.storeId === storeId);
+    const { data, error } = await supabase
+      .from('ai_recommendations')
+      .select('*')
+      .eq('store_id', storeId);
+
+    if (error) throw error;
+    return (data || []).map(r => ({
+      id: r.id,
+      storeId: r.store_id,
+      type: r.type as any,
+      title: r.title,
+      description: r.description,
+      actionType: r.action_type as any,
+      actionPayload: r.action_payload,
+      confidenceScore: r.confidence_score,
+      estimatedProfitImpact: Number(r.estimated_profit_impact),
+      status: r.status as any,
+      createdAt: r.created_at
+    }));
   }
 
   async generateRecommendations(storeId: string): Promise<void> {
-    const d = this.data;
-    const products = d.products.filter((p: any) => p.storeId === storeId);
-    const orders = d.orders.filter((o: any) => o.storeId === storeId);
-    
-    // Mock generation logic
-    const recommendations: AIRecommendation[] = [
+    // Mock logic for generating recommendations and saving to Supabase
+    const recommendations = [
       {
-        id: `rec-${Date.now()}-1`,
-        storeId,
+        store_id: storeId,
         type: 'pricing',
         title: 'Optimize Price for Coffee Grinder',
         description: 'Competitor analysis shows you can increase price by 5% without losing volume.',
-        actionType: 'price_update',
-        actionPayload: { productId: 'p1', newPrice: 136.50, oldPrice: 129.99 },
-        confidenceScore: 92,
-        estimatedProfitImpact: 450,
-        status: 'pending',
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: `rec-${Date.now()}-2`,
-        storeId,
-        type: 'inventory',
-        title: 'Restock Gooseneck Kettle',
-        description: 'Current stock is 4. Based on sales velocity, you will be out of stock in 3 days.',
-        actionType: 'restock',
-        actionPayload: { productId: 'p2', quantity: 20 },
-        confidenceScore: 98,
-        estimatedProfitImpact: 1200,
-        status: 'pending',
-        createdAt: new Date().toISOString()
+        action_type: 'price_update',
+        action_payload: { productId: 'p1', newPrice: 136.50, oldPrice: 129.99 },
+        confidence_score: 92,
+        estimated_profit_impact: 450,
+        status: 'pending'
       }
     ];
 
-    d.aiRecommendations = [...(d.aiRecommendations || []), ...recommendations];
-    this.save(d);
+    const { error } = await supabase.from('ai_recommendations').insert(recommendations);
+    if (error) throw error;
   }
 
   async applyRecommendation(recId: string): Promise<void> {
-    const d = this.data;
-    const idx = d.aiRecommendations.findIndex((r: any) => r.id === recId);
-    if (idx === -1) return;
+    const { data: rec, error: getError } = await supabase
+      .from('ai_recommendations')
+      .select('*')
+      .eq('id', recId)
+      .single();
 
-    const rec = d.aiRecommendations[idx];
-    if (rec.status !== 'pending') return;
+    if (getError || !rec) return;
 
-    // Execute Action
-    if (rec.actionType === 'price_update' || rec.actionType === 'discount') {
-      const pIdx = d.products.findIndex((p: any) => p.id === rec.actionPayload.productId);
-      if (pIdx !== -1) d.products[pIdx].price = rec.actionPayload.newPrice;
-    } else if (rec.actionType === 'restock') {
-      const pIdx = d.products.findIndex((p: any) => p.id === rec.actionPayload.productId);
-      if (pIdx !== -1) d.products[pIdx].stock += rec.actionPayload.quantity;
+    if (rec.action_type === 'price_update') {
+      await supabase
+        .from('products')
+        .update({ price: rec.action_payload.newPrice })
+        .eq('id', rec.action_payload.productId);
     }
 
-    d.aiRecommendations[idx].status = 'applied';
-    this.save(d);
+    await supabase
+      .from('ai_recommendations')
+      .update({ status: 'applied' })
+      .eq('id', recId);
   }
 
   async undoRecommendation(recId: string): Promise<void> {
-    const d = this.data;
-    const idx = d.aiRecommendations.findIndex((r: any) => r.id === recId);
-    if (idx === -1) return;
+    const { data: rec, error: getError } = await supabase
+      .from('ai_recommendations')
+      .select('*')
+      .eq('id', recId)
+      .single();
 
-    const rec = d.aiRecommendations[idx];
-    if (rec.status !== 'applied') return;
+    if (getError || !rec) return;
 
-    // Reverse Action
-    if (rec.actionType === 'price_update' || rec.actionType === 'discount') {
-      const pIdx = d.products.findIndex((p: any) => p.id === rec.actionPayload.productId);
-      if (pIdx !== -1) d.products[pIdx].price = rec.actionPayload.oldPrice || d.products[pIdx].price;
-    } else if (rec.actionType === 'restock') {
-      const pIdx = d.products.findIndex((p: any) => p.id === rec.actionPayload.productId);
-      if (pIdx !== -1) d.products[pIdx].stock -= rec.actionPayload.quantity;
+    if (rec.action_type === 'price_update') {
+      await supabase
+        .from('products')
+        .update({ price: rec.action_payload.oldPrice })
+        .eq('id', rec.action_payload.productId);
     }
 
-    d.aiRecommendations[idx].status = 'pending';
-    this.save(d);
+    await supabase
+      .from('ai_recommendations')
+      .update({ status: 'pending' })
+      .eq('id', recId);
   }
 
   async dismissRecommendation(recId: string): Promise<void> {
-    const d = this.data;
-    const idx = d.aiRecommendations.findIndex((r: any) => r.id === recId);
-    if (idx !== -1) {
-      d.aiRecommendations[idx].status = 'dismissed';
-      this.save(d);
-    }
+    await supabase
+      .from('ai_recommendations')
+      .update({ status: 'dismissed' })
+      .eq('id', recId);
   }
 
-  // Store Settings
   async getStoreSettings(storeId: string): Promise<StoreSettings> {
-    const d = this.data;
-    const settings = (d.storeSettings || []).find((s: any) => s.storeId === storeId);
-    if (settings) return settings;
+    const { data, error } = await supabase
+      .from('store_settings')
+      .select('*')
+      .eq('store_id', storeId)
+      .single();
 
-    // Default settings
-    const store = d.stores.find((s: any) => s.id === storeId);
+    if (error || !data) {
+      return {
+        storeId,
+        storeName: 'My Store',
+        domain: 'mystore.myshopify.com',
+        webhooksEnabled: true,
+        priceScrapingEnabled: true,
+        aiReportsEnabled: true,
+        inventoryAutoResetEnabled: false,
+        updatedAt: new Date().toISOString()
+      };
+    }
+
     return {
-      storeId,
-      storeName: store?.name || 'My Store',
-      domain: `${store?.name?.toLowerCase().replace(/\s+/g, '-')}.myshopify.com`,
-      webhooksEnabled: true,
-      priceScrapingEnabled: true,
-      aiReportsEnabled: true,
-      inventoryAutoResetEnabled: false,
-      updatedAt: new Date().toISOString()
+      storeId: data.store_id,
+      storeName: data.store_name,
+      domain: data.domain,
+      webhooksEnabled: data.webhooks_enabled,
+      priceScrapingEnabled: data.price_scraping_enabled,
+      aiReportsEnabled: data.ai_reports_enabled,
+      inventoryAutoResetEnabled: data.inventory_auto_reset_enabled,
+      updatedAt: data.updated_at
     };
   }
 
   async saveStoreSettings(settings: StoreSettings): Promise<void> {
-    const d = this.data;
-    const idx = d.storeSettings.findIndex((s: any) => s.storeId === settings.storeId);
-    if (idx !== -1) {
-      d.storeSettings[idx] = { ...settings, updatedAt: new Date().toISOString() };
-    } else {
-      d.storeSettings.push({ ...settings, updatedAt: new Date().toISOString() });
-    }
-    this.save(d);
+    const { error } = await supabase
+      .from('store_settings')
+      .upsert({
+        store_id: settings.storeId,
+        store_name: settings.storeName,
+        domain: settings.domain,
+        webhooks_enabled: settings.webhooksEnabled,
+        price_scraping_enabled: settings.priceScrapingEnabled,
+        ai_reports_enabled: settings.aiReportsEnabled,
+        inventory_auto_reset_enabled: settings.inventoryAutoResetEnabled,
+        updated_at: new Date().toISOString()
+      });
+
+    if (error) throw error;
   }
 
-  // Sessions & Activity
   async getSessions(userId: string): Promise<UserSession[]> {
-    return [
-      { id: 'sess-1', userId, device: 'MacBook Pro - Chrome', location: 'San Francisco, US', ip: '192.168.1.1', lastActive: new Date().toISOString() },
-      { id: 'sess-2', userId, device: 'iPhone 15 - Safari', location: 'San Francisco, US', ip: '192.168.1.2', lastActive: new Date(Date.now() - 86400000).toISOString() }
-    ];
+    return [];
   }
 
   async getSecurityActivity(userId: string): Promise<SecurityActivity[]> {
-    return [
-      { id: 'act-1', userId, type: 'login', timestamp: new Date().toISOString(), ip: '192.168.1.1' },
-      { id: 'act-2', userId, type: 'password_change', timestamp: new Date(Date.now() - 172800000).toISOString(), ip: '192.168.1.1' }
-    ];
+    return [];
   }
+
+  // Mock methods for Shopify sync
+  async syncShopifyOrders(storeId: string): Promise<void> {}
+  async syncShopifyProducts(storeId: string): Promise<void> {}
 }
 
-export const db = new LocalDatabase();
+export const db = new SupabaseDatabase();

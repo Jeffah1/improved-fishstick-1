@@ -1,20 +1,15 @@
 import { NextResponse } from 'next/server';
 import { login } from '@/lib/auth';
-import { usersStore } from '@/lib/mock-db';
+import { db } from '@/lib/db';
 
 export async function POST(req: Request) {
   try {
     const { email, password } = await req.json();
-    const user = usersStore.find((u: any) => u.email === email && u.password === password);
+    const user = await db.login(email, password);
 
-    if (!user) {
-      return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
-    }
+    await login(user);
 
-    const { password: _, ...userWithoutPassword } = user;
-    await login(userWithoutPassword);
-
-    return NextResponse.json({ user: userWithoutPassword });
+    return NextResponse.json({ user });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
