@@ -15,9 +15,13 @@ import {
   UserSession,
   SecurityActivity
 } from '@/types';
-import { supabase } from './supabase';
+import { getSupabase } from './supabase';
 
 class SupabaseDatabase {
+  private get supabase() {
+    return getSupabase();
+  }
+
   // Helper to map snake_case to camelCase for User
   private mapUser(data: any): User {
     return {
@@ -36,7 +40,7 @@ class SupabaseDatabase {
   }
 
   async register(email: string, password: string): Promise<User> {
-    const { data: authData, error: authError } = await supabase.auth.signUp({
+    const { data: authData, error: authError } = await this.supabase.auth.signUp({
       email,
       password,
     });
@@ -52,7 +56,7 @@ class SupabaseDatabase {
       name: email.split('@')[0]
     };
 
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('users')
       .insert(newUser)
       .select()
@@ -63,7 +67,7 @@ class SupabaseDatabase {
   }
 
   async login(email: string, password: string): Promise<User> {
-    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+    const { data: authData, error: authError } = await this.supabase.auth.signInWithPassword({
       email,
       password,
     });
@@ -71,7 +75,7 @@ class SupabaseDatabase {
     if (authError) throw authError;
     if (!authData.user) throw new Error("Login failed");
 
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('users')
       .select('*')
       .eq('id', authData.user.id)
@@ -82,7 +86,7 @@ class SupabaseDatabase {
   }
 
   async updateUser(userId: string, updates: Partial<User>): Promise<User> {
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('users')
       .update({
         name: updates.name,
@@ -103,7 +107,7 @@ class SupabaseDatabase {
   }
 
   async updateUserPlan(userId: string, plan: PlanType): Promise<void> {
-    const { error } = await supabase
+    const { error } = await this.supabase
       .from('users')
       .update({ plan })
       .eq('id', userId);
@@ -112,7 +116,7 @@ class SupabaseDatabase {
   }
 
   async createStore(userId: string, name: string, platform: 'shopify' | 'csv'): Promise<Store> {
-    const { data: storeData, error: storeError } = await supabase
+    const { data: storeData, error: storeError } = await this.supabase
       .from('stores')
       .insert({ name, platform })
       .select()
@@ -120,7 +124,7 @@ class SupabaseDatabase {
 
     if (storeError) throw storeError;
 
-    const { error: userError } = await supabase
+    const { error: userError } = await this.supabase
       .from('users')
       .update({ store_id: storeData.id })
       .eq('id', userId);
@@ -143,7 +147,7 @@ class SupabaseDatabase {
       { store_id: storeId, name: 'Ceramic Pour Over', sku: 'CPO-5', price: 24.50, cost: 8.00, stock: 142, status: 'active' }
     ];
 
-    const { error: prodError } = await supabase.from('products').insert(products);
+    const { error: prodError } = await this.supabase.from('products').insert(products);
     if (prodError) throw prodError;
 
     // Seed some orders
@@ -168,7 +172,7 @@ class SupabaseDatabase {
       });
     }
 
-    const { error: orderError } = await supabase.from('orders').insert(orders);
+    const { error: orderError } = await this.supabase.from('orders').insert(orders);
     if (orderError) throw orderError;
   }
 
@@ -180,7 +184,7 @@ class SupabaseDatabase {
     page?: number,
     limit?: number
   } = {}): Promise<{ orders: Order[], total: number }> {
-    let query = supabase
+    let query = this.supabase
       .from('orders')
       .select('*', { count: 'exact' })
       .eq('store_id', storeId);
@@ -233,7 +237,7 @@ class SupabaseDatabase {
   }
 
   async getProducts(storeId: string): Promise<Product[]> {
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('products')
       .select('*')
       .eq('store_id', storeId);
@@ -253,7 +257,7 @@ class SupabaseDatabase {
   }
 
   async updateProductPrice(productId: string, newPrice: number): Promise<void> {
-    const { error } = await supabase
+    const { error } = await this.supabase
       .from('products')
       .update({ price: newPrice })
       .eq('id', productId);
@@ -262,7 +266,7 @@ class SupabaseDatabase {
   }
 
   async addProduct(product: Omit<Product, 'id'>): Promise<Product> {
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('products')
       .insert({
         store_id: product.storeId,
@@ -291,7 +295,7 @@ class SupabaseDatabase {
   }
 
   async updateProduct(productId: string, updates: Partial<Product>): Promise<void> {
-    const { error } = await supabase
+    const { error } = await this.supabase
       .from('products')
       .update({
         name: updates.name,
@@ -307,14 +311,14 @@ class SupabaseDatabase {
   }
 
   async getDashboardStats(storeId: string) {
-    const { data: orders, error: orderError } = await supabase
+    const { data: orders, error: orderError } = await this.supabase
       .from('orders')
       .select('*')
       .eq('store_id', storeId);
 
     if (orderError) throw orderError;
 
-    const { data: products, error: prodError } = await supabase
+    const { data: products, error: prodError } = await this.supabase
       .from('products')
       .select('*')
       .eq('store_id', storeId);
@@ -415,7 +419,7 @@ class SupabaseDatabase {
   }
 
   async saveCompetitorPrice(price: Omit<CompetitorPrice, 'id'>): Promise<CompetitorPrice> {
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('competitor_prices')
       .insert({
         store_id: price.storeId,
@@ -438,7 +442,7 @@ class SupabaseDatabase {
   }
 
   async getCompetitorPrices(productId: string): Promise<CompetitorPrice[]> {
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('competitor_prices')
       .select('*')
       .eq('product_id', productId);
@@ -458,7 +462,7 @@ class SupabaseDatabase {
   }
 
   async savePriceAlert(alert: Omit<PriceAlert, 'id'>): Promise<PriceAlert> {
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('price_alerts')
       .insert({
         store_id: alert.storeId,
@@ -483,7 +487,7 @@ class SupabaseDatabase {
   }
 
   async getPriceAlerts(storeId: string): Promise<PriceAlert[]> {
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('price_alerts')
       .select('*')
       .eq('store_id', storeId);
@@ -505,7 +509,7 @@ class SupabaseDatabase {
   }
 
   async getRecommendations(storeId: string): Promise<AIRecommendation[]> {
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('ai_recommendations')
       .select('*')
       .eq('store_id', storeId);
@@ -542,12 +546,12 @@ class SupabaseDatabase {
       }
     ];
 
-    const { error } = await supabase.from('ai_recommendations').insert(recommendations);
+    const { error } = await this.supabase.from('ai_recommendations').insert(recommendations);
     if (error) throw error;
   }
 
   async applyRecommendation(recId: string): Promise<void> {
-    const { data: rec, error: getError } = await supabase
+    const { data: rec, error: getError } = await this.supabase
       .from('ai_recommendations')
       .select('*')
       .eq('id', recId)
@@ -556,20 +560,20 @@ class SupabaseDatabase {
     if (getError || !rec) return;
 
     if (rec.action_type === 'price_update') {
-      await supabase
+      await this.supabase
         .from('products')
         .update({ price: rec.action_payload.newPrice })
         .eq('id', rec.action_payload.productId);
     }
 
-    await supabase
+    await this.supabase
       .from('ai_recommendations')
       .update({ status: 'applied' })
       .eq('id', recId);
   }
 
   async undoRecommendation(recId: string): Promise<void> {
-    const { data: rec, error: getError } = await supabase
+    const { data: rec, error: getError } = await this.supabase
       .from('ai_recommendations')
       .select('*')
       .eq('id', recId)
@@ -578,27 +582,27 @@ class SupabaseDatabase {
     if (getError || !rec) return;
 
     if (rec.action_type === 'price_update') {
-      await supabase
+      await this.supabase
         .from('products')
         .update({ price: rec.action_payload.oldPrice })
         .eq('id', rec.action_payload.productId);
     }
 
-    await supabase
+    await this.supabase
       .from('ai_recommendations')
       .update({ status: 'pending' })
       .eq('id', recId);
   }
 
   async dismissRecommendation(recId: string): Promise<void> {
-    await supabase
+    await this.supabase
       .from('ai_recommendations')
       .update({ status: 'dismissed' })
       .eq('id', recId);
   }
 
   async getStoreSettings(storeId: string): Promise<StoreSettings> {
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('store_settings')
       .select('*')
       .eq('store_id', storeId)
@@ -630,7 +634,7 @@ class SupabaseDatabase {
   }
 
   async saveStoreSettings(settings: StoreSettings): Promise<void> {
-    const { error } = await supabase
+    const { error } = await this.supabase
       .from('store_settings')
       .upsert({
         store_id: settings.storeId,
