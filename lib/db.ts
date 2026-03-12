@@ -60,9 +60,23 @@ class SupabaseDatabase {
       .from('users')
       .insert(newUser)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    
+    if (!data) {
+      // If insert didn't return data, try to fetch existing
+      const { data: existingData, error: fetchError } = await this.supabase
+        .from('users')
+        .select('*')
+        .eq('id', authData.user.id)
+        .maybeSingle();
+      
+      if (fetchError) throw fetchError;
+      if (!existingData) throw new Error("User record could not be created");
+      return this.mapUser(existingData);
+    }
+
     return this.mapUser(data);
   }
 
@@ -75,13 +89,36 @@ class SupabaseDatabase {
     if (authError) throw authError;
     if (!authData.user) throw new Error("Login failed");
 
-    const { data, error } = await this.supabase
+    let { data, error } = await this.supabase
       .from('users')
       .select('*')
       .eq('id', authData.user.id)
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+
+    if (!data) {
+      // User exists in Auth but not in users table, create them
+      const newUser: any = {
+        id: authData.user.id,
+        email,
+        plan: 'free',
+        status: 'active',
+        name: email.split('@')[0]
+      };
+
+      const { data: insertedData, error: insertError } = await this.supabase
+        .from('users')
+        .insert(newUser)
+        .select()
+        .maybeSingle();
+
+      if (insertError) throw insertError;
+      data = insertedData;
+    }
+
+    if (!data) throw new Error("User record not found");
+
     return this.mapUser(data);
   }
 
@@ -100,9 +137,10 @@ class SupabaseDatabase {
       })
       .eq('id', userId)
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
+    if (!data) throw new Error("User not found for update");
     return this.mapUser(data);
   }
 
